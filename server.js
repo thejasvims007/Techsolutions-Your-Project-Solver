@@ -1,0 +1,370 @@
+import express from 'express';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+const corsOptions = {
+  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from React app in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static('frontend/build'));
+}
+
+// MongoDB Connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/techsolutions', {
+})
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+// Cloudinary Configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Models
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, unique: true },
+  password: String,
+  role: { type: String, enum: ['admin', 'client'], default: 'client' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const projectSchema = new mongoose.Schema({
+  title: String,
+  category: String,
+  description: String,
+  image: String,
+  features: [String],
+  price: Number,
+  status: { type: String, enum: ['available', 'custom'], default: 'available' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const orderSchema = new mongoose.Schema({
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  projectName: String,
+  clientName: String,
+  date: String,
+  amount: Number,
+  status: { type: String, enum: ['pending', 'in-progress', 'delivered'], default: 'pending' },
+  expectedDelivery: String,
+  deliveryDate: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const contactSchema = new mongoose.Schema({
+  name: String,
+  email: String,
+  subject: String,
+  message: String,
+  status: { type: String, enum: ['new', 'read', 'replied'], default: 'new' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', userSchema);
+const Project = mongoose.model('Project', projectSchema);
+const Order = mongoose.model('Order', orderSchema);
+const Contact = mongoose.model('Contact', contactSchema);
+
+// Middleware to verify JWT
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
+    next();
+  });
+};
+
+// Routes
+
+// Auth Routes
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, error: 'All fields are required' });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ success: false, error: 'Email already registered' });
+    }
+
+    // Hash password with bcryptjs
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync(password, salt);
+
+    // Create new user
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword,
+      role: 'client'
+    });
+
+    await user.save();
+
+    // Generate token
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      token
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Registration failed' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(400).json({ success: false, error: 'User not found' });
+    }
+
+    const isValidPassword = bcrypt.compareSync(password, user.password);
+    if (!isValidPassword) {
+      return res.status(400).json({ success: false, error: 'Invalid password' });
+    }
+
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      token
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// Projects Routes
+app.get('/api/projects', async (req, res) => {
+  try {
+    const projects = await Project.find();
+    res.json({ success: true, projects });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.post('/api/projects', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Admin access required' });
+  }
+
+  try {
+    const project = new Project(req.body);
+    await project.save();
+    res.json({ success: true, project });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// Orders Routes
+app.get('/api/orders', authenticateToken, async (req, res) => {
+  try {
+    let orders;
+    if (req.user.role === 'admin') {
+      orders = await Order.find().populate('userId', 'name email');
+    } else {
+      orders = await Order.find({ userId: req.user.id });
+    }
+    res.json({ success: true, orders });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.post('/api/orders', authenticateToken, async (req, res) => {
+  try {
+    const { projectId } = req.body;
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      return res.status(404).json({ success: false, error: 'Project not found' });
+    }
+
+    const order = new Order({
+      projectId,
+      userId: req.user.id,
+      projectName: project.title,
+      clientName: req.user.name || 'Client',
+      date: new Date().toISOString().split('T')[0],
+      amount: project.price,
+      expectedDelivery: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    });
+
+    await order.save();
+    res.json({ success: true, order });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.put('/api/orders/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Admin access required' });
+  }
+
+  try {
+    const order = await Order.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, order });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// Contact Routes
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, subject, message } = req.body;
+
+    const contact = new Contact({
+      name,
+      email,
+      subject,
+      message
+    });
+
+    await contact.save();
+    res.json({ success: true, message: 'Thank you for your message! We will get back to you soon.', contact });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to submit contact form' });
+  }
+});
+
+app.get('/api/contact', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Admin access required' });
+  }
+
+  try {
+    const contacts = await Contact.find().sort({ createdAt: -1 });
+    res.json({ success: true, contacts });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// Seed initial data (run once)
+app.post('/api/seed', async (req, res) => {
+  try {
+    // Create admin user
+    const adminExists = await User.findOne({ email: 'admin@techsolutions.com' });
+    if (!adminExists) {
+      const salt = bcrypt.genSaltSync(10);
+      const hashedPassword = bcrypt.hashSync('admin123', salt);
+      const admin = new User({
+        name: 'Admin User',
+        email: 'admin@techsolutions.com',
+        password: hashedPassword,
+        role: 'admin'
+      });
+      await admin.save();
+    }
+
+    // Create sample projects
+    const projectCount = await Project.countDocuments();
+    if (projectCount === 0) {
+      const sampleProjects = [
+        {
+          title: "Smart Home Automation System",
+          category: "iot",
+          description: "A comprehensive IoT solution for home automation with mobile app control and voice assistant integration.",
+          image: "https://placehold.co/600x400/4f46e5/white?text=IoT+Project",
+          features: ["Real-time monitoring", "Energy optimization", "Mobile app control"],
+          price: 2999,
+          status: "available"
+        },
+        {
+          title: "AI-Powered Medical Diagnosis",
+          category: "ai",
+          description: "Machine learning model for early detection of diseases from medical imaging with 95% accuracy.",
+          image: "https://placehold.co/600x400/7c3aed/white?text=AI+Project",
+          features: ["Image classification", "Data visualization", "Cloud integration"],
+          price: 4999,
+          status: "available"
+        },
+        {
+          title: "Blockchain Voting System",
+          category: "security",
+          description: "Secure and transparent voting platform using blockchain technology to ensure integrity and anonymity.",
+          image: "https://placehold.co/600x400/0ea5e9/white?text=Security+Project",
+          features: ["End-to-end encryption", "Immutable records", "User verification"],
+          price: 3999,
+          status: "available"
+        }
+      ];
+
+      await Project.insertMany(sampleProjects);
+    }
+
+    res.json({ success: true, message: 'Database seeded successfully' });
+  } catch (error) {
+    console.error('Seed error:', error);
+    res.status(500).json({ success: false, error: 'Failed to seed database' });
+  }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Server is running' });
+});
+
+// Serve React app in production
+if (process.env.NODE_ENV === 'production') {
+  const path = await import('path');
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve('frontend', 'build', 'index.html'));
+  });
+}
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});

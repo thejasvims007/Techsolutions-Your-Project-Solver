@@ -1,0 +1,33 @@
+{
+  "name": "techsolutions-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Backend for Tech Solutions - Your Problem Solver",
+  "main": "server.js",
+  "scripts": {
+    "start": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "node server.js",
+    "client": "cd frontend && npm start",
+    "client:install": "cd frontend && npm install",
+    "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
+    "server:dev": "nodemon server.js",
+    "heroku-postbuild": "cd frontend && npm install && npm run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.8.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.3.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0"
+  }
+}
